@@ -1,0 +1,68 @@
+# macOS / iCloud
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+*.icloud
+
+# env / secrets
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+private/
+credentials/
+tokens/
+*.token
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Node / frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+.nuxt/
+.cache/
+
+# Logs / temp
+*.log
+logs/
+tmp/
+temp/
+cache/
+~$*
+*.bak
+*.tmp
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+*.duckdb
+*.parquet
+*.feather
+
+# Claude Code local settings (per-machine permissions)
+.claude/settings.local.json
+
+# Project-specific: sample/business spreadsheets are local-only
+*.xlsx
+*.xls
+*.csv
+*.numbers
