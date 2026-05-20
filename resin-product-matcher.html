@@ -586,6 +586,35 @@ tbody td.num { font-family: var(--font); text-align: right; }
 .drop-zone:hover, .drop-zone.drag-over { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
 .drop-zone input[type=file] { display: none; }
 
+/* ─── Data persistence notice (data-protection patch) ─── */
+.data-notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--accent-soft);
+  border: 1px solid var(--border-lit);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: .76rem;
+  line-height: 1.6;
+  color: var(--text-sec);
+}
+.data-notice .data-notice-icon { font-size: 1rem; line-height: 1.4; flex-shrink: 0; }
+.data-notice strong { color: var(--text-pri); }
+
+/* ─── JSON backup restore row ─── */
+.json-restore-row { margin-top: 12px; }
+.json-restore-row .btn { width: 100%; }
+.json-restore-hint {
+  font-size: .72rem;
+  color: var(--text-muted);
+  margin-top: 8px;
+  line-height: 1.6;
+}
+.json-restore-hint strong { color: var(--text-sec); }
+
 /* ─── Toast ─── */
 #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
 .toast {
@@ -1267,6 +1296,15 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
     <!-- ─── DATA MANAGEMENT VIEW ─── -->
     <div class="view-panel" id="panel-data">
+      <div class="data-notice">
+        <span class="data-notice-icon">💾</span>
+        <div>
+          <strong>Data is saved in this browser and this website (origin) only.</strong>
+          If you switch between a local file, localhost, and GitHub Pages, the data is <strong>not shared</strong>. Please use <strong>Export</strong> before switching devices or URLs.
+          <br>
+          数据仅保存在当前浏览器与当前网址（origin）中。本地文件、localhost、GitHub Pages 之间<strong>互不共享</strong>。更换设备或网址前，请先点击 <strong>Export</strong> 备份。
+        </div>
+      </div>
       <div class="data-mgmt-grid">
 
         <!-- Import -->
@@ -1278,6 +1316,15 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             <div>Click or drag &amp; drop Excel / CSV</div>
             <div style="font-size:.72rem;margin-top:4px;color:var(--text-muted)">.xlsx · .xls · .csv supported</div>
           </div>
+          <div class="json-restore-row">
+            <input type="file" id="json-restore-input" accept=".json,application/json" style="display:none" onchange="handleJsonRestoreInput(event)">
+            <button class="btn btn-secondary" onclick="document.getElementById('json-restore-input').click()">🛟 Restore JSON Backup · 恢复完整备份</button>
+            <div class="json-restore-hint">
+              Restores a full <strong>.json</strong> backup exported from this tool. This overwrites current data — a safety snapshot is auto-saved first.
+              <br>
+              恢复本工具导出的完整 <strong>.json</strong> 备份，将覆盖当前数据（覆盖前自动保存一份安全快照）。
+            </div>
+          </div>
         </div>
 
         <!-- Export -->
@@ -1286,6 +1333,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
           <div class="mgmt-btn-group">
             <button class="btn btn-secondary" onclick="exportExcel()">⬇ Export Excel (.xlsx)</button>
             <button class="btn btn-secondary" onclick="exportCSV()">⬇ Export CSV (.csv)</button>
+            <button class="btn btn-primary" onclick="exportJsonBackup()">🛟 Export JSON Backup · 完整备份</button>
             <button class="btn btn-secondary" onclick="downloadTemplate()">📋 Download Import Template</button>
           </div>
         </div>
@@ -1396,6 +1444,9 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
    ════════════════════════════════════════════════════════ */
 
 const STORAGE_KEY = 'resinMatcher_v1';
+// Single-slot snapshot of the main key, written only before destructive ops
+// (clear / overwrite-import / cleanup). NOT written on every save.
+const BACKUP_KEY = 'resinMatcher_v1_backup';
 
 const CATEGORY_SCHEMAS = {
   powder: {
@@ -1579,6 +1630,22 @@ function updateHeaderStatus() {
   const count = STATE.db[STATE.activeCat].length;
   document.getElementById('header-count').textContent = count + ' products loaded';
   document.getElementById('cat-badge-powder').textContent = STATE.db.powder.length;
+}
+
+// Snapshot the current main key into BACKUP_KEY before a destructive operation.
+// Stores the raw JSON string verbatim (most faithful). Single-slot: each call
+// overwrites the previous backup, so this never doubles per-save write volume.
+// Must never throw — a failed backup cannot block the user's actual operation.
+function backupBeforeDestructive(reason) {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) return false; // nothing saved yet → nothing to back up
+    localStorage.setItem(BACKUP_KEY, raw);
+    return true;
+  } catch (e) {
+    console.warn('[BACKUP] Pre-destructive backup failed (' + (reason || '') + '):', e && e.message);
+    return false;
+  }
 }
 
 /* ════════════════════════════════════════════════════════
@@ -1970,6 +2037,78 @@ function downloadString(content, filename, mime) {
 
 function dateStr() {
   return new Date().toISOString().slice(0,10).replace(/-/g,'');
+}
+
+// Local timestamp YYYYMMDD-HHMM for backup filenames.
+function backupTimestamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+}
+
+// Full JSON backup for cross-environment migration. Mirrors the exact payload
+// shape persisted to localStorage (version + lastUpdated + data.{powder,liquid}),
+// so ranges, nulls and field structure are preserved byte-for-byte by JSON.
+// Does NOT replace the existing Excel/CSV exports — those are unchanged.
+function exportJsonBackup() {
+  const payload = {
+    version: '1.0',
+    lastUpdated: new Date().toISOString(),
+    data: STATE.db
+  };
+  const json = JSON.stringify(payload, null, 2);
+  downloadString(json, 'resin-matcher-backup-' + backupTimestamp() + '.json', 'application/json');
+  const total = (STATE.db.powder ? STATE.db.powder.length : 0) + (STATE.db.liquid ? STATE.db.liquid.length : 0);
+  showToast('success', 'JSON backup exported · JSON 备份已导出', total + ' product(s)');
+}
+
+// ── JSON Backup Restore (counterpart to exportJsonBackup) ──
+// Reads a .json backup file and hands its text to restoreJsonBackup().
+// Independent file input — does NOT touch the Excel/CSV import flow.
+async function handleJsonRestoreInput(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = ''; // allow re-selecting the same file later
+  try {
+    const text = await file.text();
+    restoreJsonBackup(text);
+  } catch (e) {
+    showToast('error', 'Restore failed · 恢复失败', 'Could not read the file. Current data is unchanged.');
+  }
+}
+
+// Validate + restore a full JSON backup. Data-only: parses with JSON.parse
+// (never eval), reads ONLY data.powder / data.liquid, and ignores every other
+// key — so a file can never alter storage keys, theme, schema or code.
+// On any validation failure it returns BEFORE mutating STATE.db, so current
+// data is never destroyed by a bad file.
+function restoreJsonBackup(jsonText) {
+  let payload;
+  try {
+    payload = JSON.parse(jsonText);
+  } catch (e) {
+    showToast('error', 'Invalid JSON · 格式错误', 'File is not valid JSON. Nothing was changed.');
+    return;
+  }
+  // Structure must be { data: { powder: [...], liquid: [...] } }.
+  // version / lastUpdated are tolerated (optional, not required).
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+      !payload.data || typeof payload.data !== 'object' ||
+      !Array.isArray(payload.data.powder) || !Array.isArray(payload.data.liquid)) {
+    showToast('error', 'Invalid backup format · 备份格式不正确',
+      'Expected { data: { powder: [], liquid: [] } }. Nothing was changed.');
+    return;
+  }
+  // Snapshot current data BEFORE overwriting (single-slot safety backup).
+  backupBeforeDestructive('json-restore');
+  // Apply only the recognized data arrays — explicitly NOT spreading the file,
+  // so unknown top-level keys are discarded.
+  STATE.db.powder = payload.data.powder;
+  STATE.db.liquid = payload.data.liquid;
+  saveToStorage();
+  refreshAll();
+  const total = STATE.db.powder.length + STATE.db.liquid.length;
+  showToast('success', 'Backup restored · 备份已恢复', total + ' product(s) loaded');
 }
 
 /* ════════════════════════════════════════════════════════
@@ -2842,6 +2981,8 @@ function confirmImport() {
 
   const allowBlank = document.getElementById('import-allow-blank')?.checked || false;
   const existing = STATE.db[STATE.activeCat];
+  // Overwrite mode replaces existing data — snapshot current state first.
+  if (STATE.importMode === 'overwrite') backupBeforeDestructive('import-overwrite');
   const { result, added, updated, skipped } = mergeProducts(existing, products, STATE.importMode, { allowBlankOverwrite: allowBlank });
   STATE.db[STATE.activeCat] = result;
   saveToStorage();
@@ -2943,6 +3084,7 @@ function closeConfirm() {
 
 function clearPowderData() {
   console.log('[CLEAR] clearPowderData start, before:', STATE.db.powder.length);
+  backupBeforeDestructive('clear');
   STATE.db.powder = [];
   STATE.matchResults = [];
   saveToStorage();
@@ -3183,6 +3325,11 @@ function runMatcherSelfTest() {
 }
 
 function cleanupNoIdProducts() {
+  // Snapshot before removing any id-less rows — but only if such rows exist,
+  // so a normal clean load never writes a backup.
+  const hasNoId = Object.keys(STATE.db).some(cat =>
+    STATE.db[cat].some(p => !(p.id && String(p.id).trim() !== '')));
+  if (hasNoId) backupBeforeDestructive('cleanup-no-id');
   let removed = 0;
   for (const cat of Object.keys(STATE.db)) {
     const before = STATE.db[cat].length;
