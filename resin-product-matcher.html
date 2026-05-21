@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Powder Resin Product Matcher | 粉体树脂产品指标匹配系统</title>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js" integrity="sha384-vtjasyidUo0kW94K5MXDXntzOJpQgBKXmE7e2Ga4LG0skTTLeBi97eFAXsqewJjw" crossorigin="anonymous"></script>
 <script>
   // Pre-paint theme init — runs before body renders to avoid flash of wrong theme
   (function () {
@@ -2392,7 +2392,7 @@ function renderResultCard(r, idx) {
   }
   const refPills = refList
     .filter(r => r.val && r.val !== 'n/a' && r.val !== '—')
-    .map(r => `<div class="ref-pill">${r.label}: <span>${r.val}</span></div>`)
+    .map(r => `<div class="ref-pill">${r.label}: <span>${escHtml(r.val)}</span></div>`)
     .join('');
 
   // Header subtitle priority: Product Remark → Remark → Application
@@ -2408,7 +2408,7 @@ function renderResultCard(r, idx) {
   <div class="result-card" id="rc_${idx}" onclick="toggleResultCard('rc_${idx}')">
     <div class="result-header">
       <div class="result-rank ${rank<=3?'rank-'+rank:''}">${rank}</div>
-      <div class="result-id">${product.id || '(no ID)'}</div>
+      <div class="result-id">${escHtml(product.id || '(no ID)')}</div>
       <div class="result-meta">${headerSub ? escHtml(headerSub) : '<span class="text-muted">—</span>'}</div>
       <span class="coverage-pill ${covClass}">${covLabel}</span>
       <div class="result-score-wrap">
@@ -2554,7 +2554,9 @@ function renderTable() {
 
   tbody.innerHTML = products.map((p, i) => {
     const cells = cols.map(f => {
-      const val = f.type === 'range' ? formatRange(p[f.key]) : (p[f.key] || '');
+      // range values come from formatRange (numeric, safe); text fields are
+      // user-imported and must be HTML-escaped before innerHTML insertion.
+      const val = f.type === 'range' ? formatRange(p[f.key]) : escHtml(p[f.key] || '');
       const cls = f.type === 'range' ? ' class="num mono"' : '';
       return `<td${cls}>${val || '<span class="text-muted">—</span>'}</td>`;
     }).join('');
@@ -2563,8 +2565,8 @@ function renderTable() {
         ${cells}
         <td onclick="event.stopPropagation()">
           <div style="display:flex;gap:4px">
-            <button class="btn btn-ghost btn-sm btn-icon" onclick="openProductModal('${escHtml(p.id)}')" title="Edit">✎</button>
-            <button class="btn btn-danger btn-sm btn-icon" onclick="deleteProduct('${escHtml(p.id)}')" title="Delete">✕</button>
+            <button class="btn btn-ghost btn-sm btn-icon" onclick="openProductModal('${escJsAttr(p.id)}')" title="Edit">✎</button>
+            <button class="btn btn-danger btn-sm btn-icon" onclick="deleteProduct('${escJsAttr(p.id)}')" title="Delete">✕</button>
           </div>
         </td>
       </tr>
@@ -2582,10 +2584,10 @@ function renderProductDetail(p, schema) {
   const detailFields = schema.fields.filter(f => f.key !== 'id');
   const dbLabel = f => (f.key === 'flow' ? 'Flow Distance' : f.labelEn);
   const parts = detailFields.map(f => {
-    const val = f.type === 'range' ? formatRange(p[f.key]) : (p[f.key] || '—');
+    const val = f.type === 'range' ? formatRange(p[f.key]) : escHtml(p[f.key] || '—');
     return `<div class="ref-pill">${dbLabel(f)}${f.unit?' ('+f.unit+')':''}: <span>${val}</span></div>`;
   }).join('');
-  return `<div style="font-size:.78rem;font-weight:700;margin-bottom:8px;color:var(--text-sec)">Full Details — ${p.id || '(no ID)'}</div>
+  return `<div style="font-size:.78rem;font-weight:700;margin-bottom:8px;color:var(--text-sec)">Full Details — ${escHtml(p.id || '(no ID)')}</div>
     <div class="ref-fields-grid">${parts || '<span class="text-muted">No data</span>'}</div>`;
 }
 
@@ -2648,8 +2650,8 @@ function renderProductCards(products, schema) {
       <div class="pc-card-head">
         <div class="pc-id">${escHtml(p.id || '—')}</div>
         <div class="pc-actions">
-          <button class="btn btn-ghost btn-sm btn-icon" onclick="openProductModal('${escHtml(p.id)}')" title="Edit">✎</button>
-          <button class="btn btn-danger btn-sm btn-icon" onclick="deleteProduct('${escHtml(p.id)}')" title="Delete">✕</button>
+          <button class="btn btn-ghost btn-sm btn-icon" onclick="openProductModal('${escJsAttr(p.id)}')" title="Edit">✎</button>
+          <button class="btn btn-danger btn-sm btn-icon" onclick="deleteProduct('${escJsAttr(p.id)}')" title="Delete">✕</button>
         </div>
       </div>
       ${(p.competitor || p.application) ? `<div class="pc-tags">
@@ -2716,6 +2718,17 @@ function escHtml(s) {
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+// Escape a value for safe embedding inside a single-quoted JS string that itself
+// sits inside a double-quoted HTML attribute, e.g. onclick="fn('<here>')".
+// JS-escape backslash / single-quote / newlines first, then HTML-escape so the
+// attribute carries the value intact. Prevents both attribute and JS breakout.
+function escJsAttr(s) {
+  return escHtml(String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r?\n/g, ' '));
 }
 
 let _editingId = null;
@@ -2916,7 +2929,7 @@ function renderImportPreview(rawRows, autoColMap, headers) {
       const auto = autoColMap[i];
       const cls = auto ? 'col-recognized' : 'col-unrecognized';
       return `<th class="${cls}" style="min-width:160px;vertical-align:top;">
-        <div style="margin-bottom:5px;font-weight:700;">${h}</div>
+        <div style="margin-bottom:5px;font-weight:700;">${escHtml(h)}</div>
         <select class="col-map-select" data-col="${i}" style="width:100%;font-size:.72rem;">
           ${fieldOptions}
         </select>
@@ -2933,7 +2946,7 @@ function renderImportPreview(rawRows, autoColMap, headers) {
   t.querySelector('tbody').innerHTML = rawRows.slice(1, 6).map(row =>
     '<tr>' + headers.map((_, i) => {
       const v = row[i];
-      return `<td style="white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;">${v ?? ''}</td>`;
+      return `<td style="white-space:nowrap;max-width:180px;overflow:hidden;text-overflow:ellipsis;">${escHtml(v ?? '')}</td>`;
     }).join('') + '</tr>'
   ).join('');
 
@@ -3122,8 +3135,9 @@ function showToast(type, title, msg) {
   const icons = { success: '✓', error: '✕', warning: '⚠', info: 'ℹ' };
   const el = document.createElement('div');
   el.className = 'toast ' + type;
+  // title/msg may include user data (e.g. product id) — escape before innerHTML.
   el.innerHTML = `<span class="toast-icon">${icons[type]||'•'}</span>
-    <div class="toast-msg"><strong>${title}</strong>${msg ? '<br><span style="color:var(--text-sec);font-size:.78rem">' + msg + '</span>' : ''}</div>`;
+    <div class="toast-msg"><strong>${escHtml(title)}</strong>${msg ? '<br><span style="color:var(--text-sec);font-size:.78rem">' + escHtml(msg) + '</span>' : ''}</div>`;
   const container = document.getElementById('toast-container');
   container.appendChild(el);
   setTimeout(() => { el.style.opacity='0'; el.style.transition='opacity .3s'; setTimeout(() => el.remove(), 300); }, 3200);
