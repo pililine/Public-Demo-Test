@@ -624,6 +624,7 @@ tbody td.num { font-family: var(--font); text-align: right; }
   word-break: break-word;
 }
 .storage-status { display: flex; flex-direction: column; gap: 6px; font-size: .74rem; }
+.hc-summary { font-weight: 700; font-size: .8rem; margin-bottom: 8px; }
 .ss-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; min-width: 0; }
 .ss-key { color: var(--text-muted); flex-shrink: 0; }
 .ss-val { color: var(--text-sec); text-align: right; word-break: break-all; min-width: 0; }
@@ -1382,6 +1383,16 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             <div class="ss-row"><span class="ss-key">Last cleanup · 最近清理</span><span class="ss-val mono" id="ss-cleanup">None</span></div>
             <div class="ss-row"><span class="ss-key">Location · 来源</span><span class="ss-val mono" id="ss-origin">—</span></div>
           </div>
+        </div>
+
+        <!-- Health Check -->
+        <div class="card">
+          <div class="mgmt-section-title">Health Check · 数据自检</div>
+          <div style="font-size:.72rem;color:var(--text-muted);margin-bottom:10px;line-height:1.6;">
+            只读检查当前浏览器数据健康状态，不修改、不删除、不写入任何数据。
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="runHealthCheck()">▶ Run Health Check · 运行自检</button>
+          <div class="storage-status" id="hc-results" style="display:none;margin-top:12px;"></div>
         </div>
 
         <!-- Danger -->
@@ -2864,6 +2875,199 @@ function applyVersionDisplay() {
   if (sub) sub.textContent = '粉体树脂产品指标匹配系统 v' + APP_VERSION + ' · 开发者 陈鑫';
   const v = document.getElementById('ss-version');
   if (v) v.textContent = 'Resin Product Matcher v' + APP_VERSION + ' · ' + APP_BUILD_DATE;
+}
+
+/* ════════════════════════════════════════════════════════
+   HEALTH CHECK (read-only diagnostics for Data Management)
+   Pure read: never writes localStorage, never mutates data,
+   never calls save/backup/cleanup. status ∈ ok|warn|error|info.
+   ════════════════════════════════════════════════════════ */
+
+// Returns an array of { id, label, status, detail }. Detail strings are raw;
+// renderHealthChecks() is the single escaping boundary.
+function collectHealthChecks() {
+  const checks = [];
+  const add = (id, label, status, detail) => checks.push({ id, label, status, detail });
+
+  // C1 — localStorage readable
+  let raw = null, readOk = true;
+  try { raw = localStorage.getItem(STORAGE_KEY); }
+  catch (e) { readOk = false; }
+  add('C1', 'localStorage 可读', readOk ? 'ok' : 'error',
+      readOk ? 'Accessible' : 'Cannot read localStorage');
+
+  // C2 — payload parseable + expected shape
+  let payload = null, parseOk = false, shapeOk = false;
+  if (readOk && raw) {
+    try {
+      payload = JSON.parse(raw);
+      parseOk = true;
+      shapeOk = !!(payload && payload.data && Array.isArray(payload.data.powder));
+    } catch (e) { parseOk = false; }
+  }
+  if (!raw) {
+    add('C2', '主载荷可解析', 'info', 'No saved payload yet (first launch?)');
+  } else if (!parseOk) {
+    add('C2', '主载荷可解析', 'error', 'Stored JSON is corrupted — consider Restore from a JSON backup');
+  } else if (!shapeOk) {
+    add('C2', '主载荷可解析', 'error', 'Unexpected payload shape (missing data.powder array)');
+  } else {
+    add('C2', '主载荷可解析', 'ok', 'Valid {version,lastUpdated,data{powder,liquid}}');
+  }
+
+  // In-memory db is the running source of truth for content checks.
+  const powder = (STATE.db && Array.isArray(STATE.db.powder)) ? STATE.db.powder : [];
+
+  // C3 — product count
+  add('C3', '产品数量', powder.length > 0 ? 'ok' : 'warn',
+      powder.length + ' powder products' + (powder.length ? '' : ' — empty database'));
+
+  // C4 — rows missing RA Product ID
+  const noId = powder.filter(p => !(p && p.id && String(p.id).trim() !== '')).length;
+  add('C4', '缺 RA Product ID', noId === 0 ? 'ok' : 'warn',
+      noId === 0 ? 'All rows have an ID' : (noId + ' row(s) without RA Product ID'));
+
+  // C5 — duplicate RA Product IDs
+  const seen = Object.create(null), dups = [];
+  for (const p of powder) {
+    const id = (p && p.id) ? String(p.id).trim() : '';
+    if (!id) continue;
+    seen[id] = (seen[id] || 0) + 1;
+    if (seen[id] === 2) dups.push(id);
+  }
+  if (dups.length === 0) {
+    add('C5', '重复 RA Product ID', 'ok', 'No duplicate IDs');
+  } else {
+    const shown = dups.slice(0, 5).join(', ');
+    add('C5', '重复 RA Product ID', 'warn',
+        dups.length + ' duplicate id(s): ' + shown + (dups.length > 5 ? ' …' : ''));
+  }
+
+  // C6 — average n/a range fields per product (same lens as renderDataStats)
+  const schema = CATEGORY_SCHEMAS.powder;
+  const rangeFields = (schema && schema.fields) ? schema.fields.filter(f => f.type === 'range') : [];
+  if (powder.length && rangeFields.length) {
+    let totalNA = 0;
+    for (const p of powder) for (const f of rangeFields) if (isNARange(p[f.key])) totalNA++;
+    const avgNA = totalNA / powder.length;
+    const nearlyEmpty = avgNA >= (rangeFields.length - 0.5);
+    add('C6', '平均 n/a 区间字段', nearlyEmpty ? 'warn' : 'info',
+        avgNA.toFixed(1) + ' / ' + rangeFields.length + ' fields n/a per product');
+  } else {
+    add('C6', '平均 n/a 区间字段', 'info', 'No data to evaluate');
+  }
+
+  // C7 — schema sanity
+  const schemaOk = !!(schema && schema.enabled && Array.isArray(schema.fields) && schema.fields.length > 0);
+  add('C7', 'Schema 健全', schemaOk ? 'ok' : 'error',
+      schemaOk ? (schema.fields.length + ' fields defined') : 'Powder schema missing or empty');
+
+  // C8 — in-memory vs stored count consistency
+  if (shapeOk) {
+    const storedCount = payload.data.powder.length;
+    const same = storedCount === powder.length;
+    add('C8', '内存 / 已存一致', same ? 'ok' : 'warn',
+        same ? ('Both ' + storedCount) : ('memory ' + powder.length + ' vs stored ' + storedCount));
+  } else {
+    add('C8', '内存 / 已存一致', 'info', 'No valid stored payload to compare');
+  }
+
+  // Backup snapshot reads
+  let backupExists = false, backupMs = NaN;
+  try {
+    const braw = localStorage.getItem(BACKUP_KEY);
+    if (braw !== null) {
+      backupExists = true;
+      try { const bd = JSON.parse(braw); if (bd && bd.lastUpdated) backupMs = new Date(bd.lastUpdated).getTime(); } catch (e) {}
+    }
+  } catch (e) {}
+
+  // C9 — auto snapshot present
+  add('C9', '自动快照存在', backupExists ? 'ok' : 'info',
+      backupExists ? 'Snapshot present in BACKUP_KEY' : 'No auto snapshot yet — export a JSON backup');
+
+  // C10 — backup freshness (independent read-only compare; does not touch renderStorageStatus)
+  let storageMs = NaN;
+  if (shapeOk && payload.lastUpdated) storageMs = new Date(payload.lastUpdated).getTime();
+  if (powder.length === 0) {
+    add('C10', '备份新鲜度', 'info', 'No data — nothing to back up');
+  } else if (!backupExists) {
+    add('C10', '备份新鲜度', 'warn', 'No backup — export a JSON backup');
+  } else if (isFinite(storageMs) && isFinite(backupMs) && storageMs > backupMs) {
+    add('C10', '备份新鲜度', 'warn', 'Data changed since last snapshot — export a JSON backup');
+  } else {
+    add('C10', '备份新鲜度', 'ok', 'Snapshot up to date');
+  }
+
+  // C11 — last cleanup info (display only)
+  let cleanupTxt = 'None';
+  try {
+    const craw = localStorage.getItem(CLEANUP_META_KEY);
+    if (craw) {
+      const cm = JSON.parse(craw);
+      if (cm && cm.lastCleanup) cleanupTxt = formatLocalMinute(cm.lastCleanup) + ' · removed ' + (cm.removed != null ? cm.removed : '?');
+    }
+  } catch (e) {}
+  add('C11', '最近清理', 'info', cleanupTxt);
+
+  // C12 — origin / storage isolation
+  let origin = 'Unknown';
+  try { origin = describeOrigin(); } catch (e) {}
+  const isPages = /github\.io/i.test(origin) || /GitHub Pages/i.test(origin);
+  add('C12', '当前来源 (origin)', 'info',
+      origin + (isPages ? ' · 注意 localStorage 按 origin 隔离' : ''));
+
+  // C13 — storage usage estimate
+  let bytes = 0;
+  try { bytes = raw ? new Blob([raw]).size : 0; } catch (e) { bytes = raw ? raw.length : 0; }
+  const nearLimit = bytes > 4 * 1024 * 1024;
+  add('C13', '存储占用估算', nearLimit ? 'warn' : 'info',
+      (bytes / 1024).toFixed(1) + ' KB' + (nearLimit ? ' — approaching ~5MB limit' : ''));
+
+  return checks;
+}
+
+// Render the check list into #hc-results. Single escaping boundary: every
+// label and detail is passed through escHtml here.
+function renderHealthChecks(list) {
+  const box = document.getElementById('hc-results');
+  if (!box) return;
+  const meta = {
+    ok:    { dot: '●', color: 'var(--green)' },
+    warn:  { dot: '▲', color: 'var(--amber)' },
+    error: { dot: '✕', color: 'var(--red)' },
+    info:  { dot: '·', color: 'var(--text-sec)' }
+  };
+  let warn = 0, err = 0;
+  for (const c of list) { if (c.status === 'warn') warn++; else if (c.status === 'error') err++; }
+  let summaryTxt, summaryColor;
+  if (err > 0) { summaryTxt = err + ' Error · ' + warn + ' Warning'; summaryColor = 'var(--red)'; }
+  else if (warn > 0) { summaryTxt = warn + ' Warning'; summaryColor = 'var(--amber)'; }
+  else { summaryTxt = 'All OK · 全部正常'; summaryColor = 'var(--green)'; }
+
+  let html = '<div class="hc-summary" style="color:' + summaryColor + '">' + escHtml(summaryTxt) + '</div>';
+  for (const c of list) {
+    const m = meta[c.status] || meta.info;
+    html += '<div class="ss-row">'
+      + '<span class="ss-key">' + escHtml(c.label) + '</span>'
+      + '<span class="ss-val" style="color:' + m.color + '">' + m.dot + ' ' + escHtml(c.detail) + '</span>'
+      + '</div>';
+  }
+  box.innerHTML = html;
+  box.style.display = 'block';
+}
+
+// Button entry. Self-guarded so a failure shows an error row instead of throwing.
+function runHealthCheck() {
+  try {
+    renderHealthChecks(collectHealthChecks());
+  } catch (e) {
+    const box = document.getElementById('hc-results');
+    if (box) {
+      box.innerHTML = '<div class="hc-summary" style="color:var(--red)">Health check failed: ' + escHtml(e && e.message) + '</div>';
+      box.style.display = 'block';
+    }
+  }
 }
 
 /* ════════════════════════════════════════════════════════
