@@ -1378,6 +1378,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             <div class="ss-row"><span class="ss-key">Liquid products · 液体</span><span class="ss-val mono" id="ss-liquid">0</span></div>
             <div class="ss-row"><span class="ss-key">Last saved · 最后保存</span><span class="ss-val mono" id="ss-saved">N/A</span></div>
             <div class="ss-row"><span class="ss-key">Backup · 备份</span><span class="ss-val mono" id="ss-backup">No backup</span></div>
+            <div class="ss-row"><span class="ss-key">Backup freshness · 备份状态</span><span class="ss-val mono" id="ss-backup-fresh">—</span></div>
             <div class="ss-row"><span class="ss-key">Last cleanup · 最近清理</span><span class="ss-val mono" id="ss-cleanup">None</span></div>
             <div class="ss-row"><span class="ss-key">Location · 来源</span><span class="ss-val mono" id="ss-origin">—</span></div>
           </div>
@@ -2808,6 +2809,37 @@ function renderStorageStatus() {
     }
   } catch (e) {}
   set('ss-backup', backupTxt);
+
+  // Backup freshness — display-only comparison of the main data timestamp
+  // against the BACKUP_KEY snapshot. "Backup" here means the pre-destructive
+  // auto-snapshot; a manual JSON export downloads a file and is not tracked.
+  (function () {
+    const el = document.getElementById('ss-backup-fresh');
+    if (!el) return;
+    const hasData = ((STATE.db.powder || []).length + (STATE.db.liquid || []).length) > 0;
+    let storageMs = NaN, backupMs = NaN, backupExists = false;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) { const d = JSON.parse(raw); if (d && d.lastUpdated) storageMs = new Date(d.lastUpdated).getTime(); }
+    } catch (e) {}
+    try {
+      const braw = localStorage.getItem(BACKUP_KEY);
+      if (braw !== null) { backupExists = true; const bd = JSON.parse(braw); if (bd && bd.lastUpdated) backupMs = new Date(bd.lastUpdated).getTime(); }
+    } catch (e) {}
+    let txt, color;
+    if (!hasData) {
+      txt = '无数据 · 暂无需备份'; color = 'var(--text-sec)';
+    } else if (!backupExists) {
+      txt = '尚无备份 · 建议导出 JSON 备份'; color = 'var(--amber)';
+    } else if (isFinite(storageMs) && isFinite(backupMs) && storageMs > backupMs) {
+      txt = '数据已变更 · 建议导出 JSON 备份'; color = 'var(--amber)';
+    } else {
+      txt = '已备份'; color = 'var(--green)';
+    }
+    el.textContent = txt;
+    el.style.color = color;
+  })();
+
   set('ss-cleanup', cleanupStatusText());
 
   set('ss-origin', describeOrigin());
