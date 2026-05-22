@@ -624,9 +624,9 @@ tbody td.num { font-family: var(--font); text-align: right; }
   word-break: break-word;
 }
 .storage-status { display: flex; flex-direction: column; gap: 6px; font-size: .74rem; }
-.ss-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.ss-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; min-width: 0; }
 .ss-key { color: var(--text-muted); flex-shrink: 0; }
-.ss-val { color: var(--text-sec); text-align: right; word-break: break-all; }
+.ss-val { color: var(--text-sec); text-align: right; word-break: break-all; min-width: 0; }
 
 /* ─── Toast ─── */
 #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
@@ -1378,6 +1378,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             <div class="ss-row"><span class="ss-key">Liquid products · 液体</span><span class="ss-val mono" id="ss-liquid">0</span></div>
             <div class="ss-row"><span class="ss-key">Last saved · 最后保存</span><span class="ss-val mono" id="ss-saved">N/A</span></div>
             <div class="ss-row"><span class="ss-key">Backup · 备份</span><span class="ss-val mono" id="ss-backup">No backup</span></div>
+            <div class="ss-row"><span class="ss-key">Last cleanup · 最近清理</span><span class="ss-val mono" id="ss-cleanup">None</span></div>
             <div class="ss-row"><span class="ss-key">Location · 来源</span><span class="ss-val mono" id="ss-origin">—</span></div>
           </div>
         </div>
@@ -1475,6 +1476,8 @@ const STORAGE_KEY = 'resinMatcher_v1';
 // Single-slot snapshot of the main key, written only before destructive ops
 // (clear / overwrite-import / cleanup). NOT written on every save.
 const BACKUP_KEY = 'resinMatcher_v1_backup';
+// Lightweight metadata only. Not part of the main product payload.
+const CLEANUP_META_KEY = 'resinMatcher_v1_cleanup_meta';
 
 // Display-only metadata. NOT used for migration, reset, storage keys, or
 // data structure — purely to let users confirm which build is loaded.
@@ -1679,6 +1682,41 @@ function backupBeforeDestructive(reason) {
   } catch (e) {
     console.warn('[BACKUP] Pre-destructive backup failed (' + (reason || '') + '):', e && e.message);
     return false;
+  }
+}
+
+function formatLocalMinute(value) {
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return 'Unknown time';
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+
+function writeCleanupMeta(removed, reason) {
+  try {
+    const meta = {
+      lastCleanup: new Date().toISOString(),
+      removed: removed,
+      reason: reason || 'cleanup-no-id'
+    };
+    localStorage.setItem(CLEANUP_META_KEY, JSON.stringify(meta));
+  } catch (e) {
+    console.warn('[CLEANUP] Cleanup metadata write failed:', e && e.message);
+  }
+}
+
+function cleanupStatusText() {
+  try {
+    const raw = localStorage.getItem(CLEANUP_META_KEY);
+    if (!raw) return 'None';
+    const meta = JSON.parse(raw);
+    const removed = Number(meta && meta.removed);
+    const when = meta && meta.lastCleanup ? formatLocalMinute(meta.lastCleanup) : 'Unknown time';
+    if (!isFinite(removed) || removed < 0) return when + ' · removed ? rows';
+    return when + ' · removed ' + removed + ' rows';
+  } catch (e) {
+    console.warn('[CLEANUP] Cleanup metadata read failed:', e && e.message);
+    return 'Unavailable';
   }
 }
 
@@ -2770,6 +2808,7 @@ function renderStorageStatus() {
     }
   } catch (e) {}
   set('ss-backup', backupTxt);
+  set('ss-cleanup', cleanupStatusText());
 
   set('ss-origin', describeOrigin());
 }
@@ -3440,8 +3479,9 @@ function cleanupNoIdProducts() {
     removed += before - STATE.db[cat].length;
   }
   if (removed > 0) {
+    writeCleanupMeta(removed, 'cleanup-no-id');
     saveToStorage();
-    showToast('warning', 'Legacy data cleaned', `Removed ${removed} product(s) with no RA Product ID from storage.`);
+    showToast('warning', `Cleaned legacy rows · 已清理 ${removed} 条无 RA Product ID 的旧数据`, 'A safety backup was saved before cleanup.');
   }
 }
 
