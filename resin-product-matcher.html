@@ -615,6 +615,19 @@ tbody td.num { font-family: var(--font); text-align: right; }
 }
 .json-restore-hint strong { color: var(--text-sec); }
 
+/* ─── Storage status (version + storage display) ─── */
+.ss-version {
+  font-size: .76rem;
+  font-weight: 700;
+  color: var(--text-sec);
+  margin-bottom: 10px;
+  word-break: break-word;
+}
+.storage-status { display: flex; flex-direction: column; gap: 6px; font-size: .74rem; }
+.ss-row { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.ss-key { color: var(--text-muted); flex-shrink: 0; }
+.ss-val { color: var(--text-sec); text-align: right; word-break: break-all; }
+
 /* ─── Toast ─── */
 #toast-container { position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; pointer-events: none; }
 .toast {
@@ -1167,7 +1180,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   <header class="header">
     <div>
       <div class="header-title">Powder Resin Product Matcher</div>
-      <div class="header-sub">粉体树脂产品指标匹配系统 v1.4.1 · 开发者 陈鑫</div>
+      <div class="header-sub" id="header-sub">粉体树脂产品指标匹配系统 · 开发者 陈鑫</div>
     </div>
     <div class="header-status">
       <span class="status-dot"></span>
@@ -1354,6 +1367,21 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
           </div>
         </div>
 
+        <!-- Storage Status -->
+        <div class="card">
+          <div class="mgmt-section-title">Storage Status · 存储状态</div>
+          <div class="ss-version" id="ss-version">Resin Product Matcher</div>
+          <div class="storage-status">
+            <div class="ss-row"><span class="ss-key">Data source · 数据来源</span><span class="ss-val">Browser localStorage</span></div>
+            <div class="ss-row"><span class="ss-key">Storage key</span><span class="ss-val mono" style="color:var(--accent)">resinMatcher_v1</span></div>
+            <div class="ss-row"><span class="ss-key">Powder products · 粉体</span><span class="ss-val mono" id="ss-powder">0</span></div>
+            <div class="ss-row"><span class="ss-key">Liquid products · 液体</span><span class="ss-val mono" id="ss-liquid">0</span></div>
+            <div class="ss-row"><span class="ss-key">Last saved · 最后保存</span><span class="ss-val mono" id="ss-saved">N/A</span></div>
+            <div class="ss-row"><span class="ss-key">Backup · 备份</span><span class="ss-val mono" id="ss-backup">No backup</span></div>
+            <div class="ss-row"><span class="ss-key">Location · 来源</span><span class="ss-val mono" id="ss-origin">—</span></div>
+          </div>
+        </div>
+
         <!-- Danger -->
         <div class="card">
           <div class="mgmt-section-title" style="color:var(--red)">Danger Zone · 危险操作</div>
@@ -1447,6 +1475,11 @@ const STORAGE_KEY = 'resinMatcher_v1';
 // Single-slot snapshot of the main key, written only before destructive ops
 // (clear / overwrite-import / cleanup). NOT written on every save.
 const BACKUP_KEY = 'resinMatcher_v1_backup';
+
+// Display-only metadata. NOT used for migration, reset, storage keys, or
+// data structure — purely to let users confirm which build is loaded.
+const APP_VERSION = '1.5.0';
+const APP_BUILD_DATE = '2026-05-21';
 
 const CATEGORY_SCHEMAS = {
   powder: {
@@ -1607,6 +1640,7 @@ function saveToStorage() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     updateHeaderStatus();
+    renderStorageStatus();
   } catch(e) {
     showToast('error', 'Storage error', e.message);
   }
@@ -2707,6 +2741,60 @@ function renderDataStats() {
   } catch(e) {}
 }
 
+// Display-only storage status panel (Data Management). Reads counts + metadata,
+// never product content. Safe to call repeatedly; no effect on stored data.
+function renderStorageStatus() {
+  const set = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  set('ss-powder', String((STATE.db.powder || []).length));
+  set('ss-liquid', String((STATE.db.liquid || []).length));
+
+  // Last saved — from the main payload's lastUpdated, else N/A.
+  let lastSaved = 'N/A';
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && d.lastUpdated) lastSaved = new Date(d.lastUpdated).toLocaleString();
+    }
+  } catch (e) {}
+  set('ss-saved', lastSaved);
+
+  // Backup presence — show its timestamp if available, else just "Present".
+  let backupTxt = 'No backup';
+  try {
+    const braw = localStorage.getItem(BACKUP_KEY);
+    if (braw !== null) {
+      let when = '';
+      try { const bd = JSON.parse(braw); if (bd && bd.lastUpdated) when = ' · ' + new Date(bd.lastUpdated).toLocaleString(); } catch (e) {}
+      backupTxt = 'Present' + when;
+    }
+  } catch (e) {}
+  set('ss-backup', backupTxt);
+
+  set('ss-origin', describeOrigin());
+}
+
+// Friendly label for the current environment so users can tell local file /
+// localhost / GitHub Pages apart (helps explain origin-isolated localStorage).
+function describeOrigin() {
+  try {
+    if (location.protocol === 'file:') return 'Local file · ' + (location.pathname || '');
+    const host = location.hostname || '';
+    let label = 'Web';
+    if (host === 'localhost' || host === '127.0.0.1') label = 'localhost';
+    else if (/\.github\.io$/.test(host)) label = 'GitHub Pages';
+    return label + ' · ' + (location.origin || (location.protocol + '//' + host)) + (location.pathname || '');
+  } catch (e) { return 'Unknown'; }
+}
+
+// Inject version metadata into the header and the storage status panel.
+function applyVersionDisplay() {
+  const sub = document.getElementById('header-sub');
+  if (sub) sub.textContent = '粉体树脂产品指标匹配系统 v' + APP_VERSION + ' · 开发者 陈鑫';
+  const v = document.getElementById('ss-version');
+  if (v) v.textContent = 'Resin Product Matcher v' + APP_VERSION + ' · ' + APP_BUILD_DATE;
+}
+
 /* ════════════════════════════════════════════════════════
    8. PRODUCT MODAL (Add / Edit)
    ════════════════════════════════════════════════════════ */
@@ -3151,6 +3239,7 @@ function refreshAll() {
   renderMatchInputs();
   renderTable();
   renderDataStats();
+  renderStorageStatus();
   updateHeaderStatus();
   // Show onboarding guide on first paint if no match has been run yet
   if (!STATE.matchResults || !STATE.matchResults.length) showEmptyGuide();
@@ -3694,6 +3783,7 @@ function updateThemeToggleLabel() {
 
 function init() {
   setTheme(getSavedTheme());
+  applyVersionDisplay();
   loadFromStorage();
   cleanupNoIdProducts();
   seedSampleData();
