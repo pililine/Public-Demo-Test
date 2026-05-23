@@ -2883,6 +2883,10 @@ function applyVersionDisplay() {
    never calls save/backup/cleanup. status ∈ ok|warn|error|info.
    ════════════════════════════════════════════════════════ */
 
+// Last rendered check list, kept in memory only (not localStorage) so the copy
+// button reproduces exactly what the user currently sees.
+let _lastHealthChecks = null;
+
 // Returns an array of { id, label, status, detail }. Detail strings are raw;
 // renderHealthChecks() is the single escaping boundary.
 function collectHealthChecks() {
@@ -3045,7 +3049,10 @@ function renderHealthChecks(list) {
   else if (warn > 0) { summaryTxt = warn + ' Warning'; summaryColor = 'var(--amber)'; }
   else { summaryTxt = 'All OK · 全部正常'; summaryColor = 'var(--green)'; }
 
-  let html = '<div class="hc-summary" style="color:' + summaryColor + '">' + escHtml(summaryTxt) + '</div>';
+  let html = '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px;">'
+    + '<span class="hc-summary" style="color:' + summaryColor + ';margin-bottom:0">' + escHtml(summaryTxt) + '</span>'
+    + '<button class="btn btn-secondary btn-sm" onclick="copyHealthCheckResult()">📋 Copy · 复制结果</button>'
+    + '</div>';
   for (const c of list) {
     const m = meta[c.status] || meta.info;
     html += '<div class="ss-row">'
@@ -3055,6 +3062,7 @@ function renderHealthChecks(list) {
   }
   box.innerHTML = html;
   box.style.display = 'block';
+  _lastHealthChecks = list;
 }
 
 // Button entry. Self-guarded so a failure shows an error row instead of throwing.
@@ -3067,6 +3075,62 @@ function runHealthCheck() {
       box.innerHTML = '<div class="hc-summary" style="color:var(--red)">Health check failed: ' + escHtml(e && e.message) + '</div>';
       box.style.display = 'block';
     }
+  }
+}
+
+// Build a plain-text health-check report for the clipboard. Output is text-only
+// (never injected as HTML), so no escaping is needed here. ASCII status tokens
+// keep it portable across email / IM.
+function buildHealthCheckText(list) {
+  const token = { ok: '[OK]   ', warn: '[WARN] ', error: '[ERROR]', info: '[INFO] ' };
+  let ok = 0, warn = 0, err = 0;
+  for (const c of list) {
+    if (c.status === 'warn') warn++;
+    else if (c.status === 'error') err++;
+    else if (c.status === 'ok') ok++;
+  }
+  let origin = 'Unknown';
+  try { origin = describeOrigin(); } catch (e) {}
+  const lines = [];
+  lines.push('Resin Product Matcher · Health Check');
+  lines.push('Version: v' + APP_VERSION + ' · ' + APP_BUILD_DATE);
+  lines.push('Time: ' + formatLocalMinute(new Date().toISOString()));
+  lines.push('Origin: ' + origin);
+  lines.push('Summary: ' + ok + ' OK · ' + warn + ' Warning · ' + err + ' Error');
+  lines.push('----------------------------------------');
+  for (const c of list) {
+    lines.push((token[c.status] || token.info) + ' ' + c.label + ' — ' + c.detail);
+  }
+  return lines.join('\n');
+}
+
+// Copy the current health-check report as plain text. Independent of
+// copyRecommendation() by design. Read-only: writes only to the clipboard.
+async function copyHealthCheckResult() {
+  const list = _lastHealthChecks || collectHealthChecks();
+  const text = buildHealthCheckText(list);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('success', 'Health check copied · 自检结果已复制', '');
+      return;
+    } catch (e) { /* fall through to execCommand */ }
+  }
+  // Fallback: hidden textarea + execCommand
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+  ta.setAttribute('readonly', '');
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let okCopy = false;
+  try { okCopy = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  if (okCopy) {
+    showToast('success', 'Health check copied · 自检结果已复制', '');
+  } else {
+    showToast('warning', 'Copy not supported · 复制不可用', 'Please manually select and copy the text.');
   }
 }
 
