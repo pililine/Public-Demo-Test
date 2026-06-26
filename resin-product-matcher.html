@@ -354,6 +354,8 @@ select option { background: var(--bg-panel); }
 .btn-secondary:hover { background: var(--bg-card); border-color: var(--accent); }
 .btn-danger   { background: var(--red-dim); border-color: var(--red-bd); color: var(--red); }
 .btn-danger:hover   { background: var(--red); border-color: var(--red); color: #fff; }
+/* Danger Zone card: red border so destructive actions are visually isolated */
+.card-danger  { border-color: var(--red-bd); }
 .btn-ghost    { background: transparent; border-color: transparent; color: var(--text-sec); }
 .btn-ghost:hover    { color: var(--text-pri); background: var(--bg-hover); }
 .btn-sm { padding: 4px 10px; font-size: .75rem; }
@@ -742,6 +744,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 }
 .confirm-box h3 { margin-bottom: 10px; }
 .confirm-box p  { color: var(--text-sec); font-size: .85rem; margin-bottom: 20px; }
+#confirm-msg    { white-space: pre-line; text-align: left; }
 .confirm-btns   { display: flex; gap: 10px; justify-content: center; }
 
 /* ─── Paste Specs Panel (V1.4) ─── */
@@ -1023,6 +1026,20 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
   /* ── Data Management ── */
   .drop-zone { padding: 20px 16px; }
+  /* Buttons: full-width, centered, and let long bilingual labels wrap
+     instead of overflowing the card (base .btn is white-space:nowrap) */
+  .mgmt-btn-group .btn,
+  .json-restore-row .btn,
+  #panel-data .card > .btn {
+    width: 100%;
+    justify-content: center;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.35;
+  }
+  .mgmt-btn-group { gap: 10px; }
+  /* Run Health Check (btn-sm): same 44px touch target as other buttons */
+  #panel-data .card > .btn-sm { min-height: 44px; }
 
   /* ── Theme toggle: ensure 44px tap target ── */
   .theme-toggle { min-height: 44px; padding: 8px 12px; }
@@ -1277,6 +1294,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
         <div>
           <div id="match-results-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;min-height:24px">
             <div style="font-size:.82rem;color:var(--text-sec)" id="match-result-count"></div>
+            <button class="btn btn-secondary btn-sm" id="copy-top3-btn" onclick="copyTop3Summary()" style="display:none">📋 Copy Top 3 · 复制推荐摘要</button>
           </div>
           <div id="match-results-container">
             <!-- Replaced by showEmptyGuide() on init / Reset / clear -->
@@ -1396,7 +1414,7 @@ hr.dim { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
         </div>
 
         <!-- Danger -->
-        <div class="card">
+        <div class="card card-danger">
           <div class="mgmt-section-title" style="color:var(--red)">Danger Zone · 危险操作</div>
           <div class="mgmt-btn-group">
             <button class="btn btn-danger" onclick="confirmClear()">🗑 Clear All Powder Resin Data</button>
@@ -2183,6 +2201,57 @@ function restoreJsonBackup(jsonText) {
       'Expected { data: { powder: [], liquid: [] } }. Nothing was changed.');
     return;
   }
+  // Pre-check: show what the file contains vs. what is currently stored,
+  // and only overwrite after the user explicitly confirms.
+  showConfirm(
+    'Restore this backup? · 确认恢复此备份？',
+    buildRestorePrecheckMsg(payload),
+    function () { applyJsonRestore(payload); },
+    'Confirm Restore'
+  );
+}
+
+// Summary text for the restore confirm dialog. Read-only: inspects the parsed
+// payload and current localStorage, mutates nothing. Rendered via textContent.
+function buildRestorePrecheckMsg(payload) {
+  const bp = payload.data.powder.length, bl = payload.data.liquid.length;
+  const cp = (STATE.db.powder || []).length, cl = (STATE.db.liquid || []).length;
+  let backupMs = null, currentMs = null;
+  if (payload.lastUpdated) {
+    const t = new Date(payload.lastUpdated).getTime();
+    if (isFinite(t)) backupMs = t;
+  }
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const d = JSON.parse(raw);
+      if (d && d.lastUpdated) {
+        const t = new Date(d.lastUpdated).getTime();
+        if (isFinite(t)) currentMs = t;
+      }
+    }
+  } catch (e) {}
+  const fmt = ms => ms === null ? 'Unknown · 未知' : formatLocalMinute(ms);
+  const countTxt = (p, l) => p + ' powder' + (l ? ' + ' + l + ' liquid' : '');
+  const lines = [];
+  lines.push('Backup file · 备份文件');
+  lines.push('· Products 产品数: ' + countTxt(bp, bl));
+  lines.push('· Saved at 保存时间: ' + fmt(backupMs));
+  lines.push('');
+  lines.push('Current data · 当前数据');
+  lines.push('· Products 产品数: ' + countTxt(cp, cl));
+  lines.push('· Saved at 保存时间: ' + fmt(currentMs));
+  if (backupMs !== null && currentMs !== null && backupMs < currentMs) {
+    lines.push('');
+    lines.push('⚠ Backup is OLDER than current data · 备份早于当前数据');
+  }
+  lines.push('');
+  lines.push('Restore will overwrite current data; a safety snapshot is saved first. 恢复将覆盖当前数据，恢复前会自动保存快照。');
+  return lines.join('\n');
+}
+
+// Runs only after the user confirms the pre-check dialog.
+function applyJsonRestore(payload) {
   // Snapshot current data BEFORE overwriting (single-slot safety backup).
   backupBeforeDestructive('json-restore');
   // Apply only the recognized data arrays — explicitly NOT spreading the file,
@@ -2282,6 +2351,8 @@ function showEmptyGuide() {
   if (c) c.innerHTML = renderEmptyGuide();
   const mrc = document.getElementById('match-result-count');
   if (mrc) mrc.textContent = '';
+  const top3Btn = document.getElementById('copy-top3-btn');
+  if (top3Btn) top3Btn.style.display = 'none';
 }
 
 function fillExampleCriteria() {
@@ -2329,6 +2400,9 @@ function runMatch() {
     return;
   }
 
+  // Kept for the Top 3 summary text (memory-only, never persisted)
+  STATE.lastQueryFields = queryFields;
+
   STATE.matchResults = products.map(p => {
     const scored = scoreProduct(p, queryFields, schema);
     return { product: p, ...scored };
@@ -2375,6 +2449,9 @@ function renderMatchResults() {
 
   document.getElementById('match-result-count').textContent =
     `Showing ${results.length} of ${STATE.matchResults.length} products`;
+
+  const top3Btn = document.getElementById('copy-top3-btn');
+  if (top3Btn) top3Btn.style.display = '';
 
   container.innerHTML = results.map((r, idx) => renderResultCard(r, idx)).join('');
 
@@ -2575,6 +2652,75 @@ async function copyRecommendation(idx) {
   document.body.removeChild(ta);
   if (ok) {
     showToast('success', 'Recommendation copied · 推荐已复制', r.product.id || '');
+  } else {
+    showToast('warning', 'Copy not supported · 复制不可用', 'Please manually select and copy the text.');
+  }
+}
+
+// ── Top 3 summary (P3-1) ──
+// Plain-text digest of the current top 3 results for sharing in chat apps.
+// Read-only: consumes STATE.matchResults / STATE.lastQueryFields, writes nothing.
+function buildTop3SummaryText() {
+  const schema = CATEGORY_SCHEMAS[STATE.activeCat];
+  const matchFields = schema.fields.filter(f => f.matchEnabled);
+  const top = STATE.matchResults.slice(0, 3);
+  const fmtScore = s => (s === null || s === undefined) ? '—' : s.toFixed(1);
+  const lines = ['【Resin Match Top ' + top.length + ' · 匹配推荐摘要】'];
+  lines.push('Time: ' + formatLocalMinute(new Date()));
+  const q = STATE.lastQueryFields || {};
+  const qLines = [];
+  for (const f of matchFields) {
+    if (!q[f.key]) continue;
+    const unit = f.unit ? ' ' + f.unit : '';
+    qLines.push('  ' + f.labelEn + ': ' + formatRange(q[f.key]) + unit);
+  }
+  if (qLines.length) {
+    lines.push('');
+    lines.push('Query · 查询条件:');
+    qLines.forEach(l => lines.push(l));
+  }
+  top.forEach((r, i) => {
+    const p = r.product;
+    lines.push('');
+    lines.push('#' + (i + 1) + '  ' + (p.id || '—')
+      + '   Rec ' + fmtScore(r.recommendationScore)
+      + ' · Match ' + fmtScore(r.matchScore)
+      + ' · Coverage ' + (r.dataCoverage * 100).toFixed(0) + '%'
+      + (r.dataCoverage < 0.5 ? '  ⚠ low data · 数据不足' : ''));
+    if (p.competitor)  lines.push('    Competitor: ' + p.competitor);
+    if (p.application) lines.push('    Application: ' + p.application);
+  });
+  lines.push('');
+  lines.push('— Resin Product Matcher');
+  return lines.join('\n');
+}
+
+async function copyTop3Summary() {
+  if (!STATE.matchResults || !STATE.matchResults.length) {
+    showToast('warning', 'No results · 暂无结果', 'Run Match first · 请先运行匹配。');
+    return;
+  }
+  const text = buildTop3SummaryText();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('success', 'Top 3 copied · 推荐摘要已复制', '');
+      return;
+    } catch (e) { /* fall through to execCommand */ }
+  }
+  // Fallback: hidden textarea + execCommand
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0';
+  ta.setAttribute('readonly', '');
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta);
+  if (ok) {
+    showToast('success', 'Top 3 copied · 推荐摘要已复制', '');
   } else {
     showToast('warning', 'Copy not supported · 复制不可用', 'Please manually select and copy the text.');
   }
